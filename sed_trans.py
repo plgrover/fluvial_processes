@@ -6,6 +6,8 @@ import math
 _nu = 1.0e-6
 _g  = 9.81
 _gamma_s = 16186.5
+_kappa = 0.41
+_Bs = 8.5
 
 _rho_water = 1000.
 _rho_particle = 2650.0

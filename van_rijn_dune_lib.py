@@ -3,7 +3,8 @@
 import numpy as np
 import math
 import sed_trans
-
+import dunelib
+from scipy.optimize import fsolve
 
 _nu = 1.0e-6
 _g  = 9.81
@@ -13,105 +14,95 @@ _kappa = 0.4
 _rho_water = 1000.
 _rho_particle = 2650.0
 
-_tol = 1.e-4
-_maxiter = 100
+# This is T where the max steepness occurs
+_T_max = 4.81247
 
+_maxiter = 100
+_tol = 1.e-4
 
 def reconstruct_flow_from_dunes(D50, Lambda, Delta, rho_particule=_rho_particle):
-    
+    ubar_low = None
+    S_low = None
+    ubar_high = None
+    S_high = None
+
     # Check if the current steepness is greater than the maximum steepness
-    gamma_d = Delta/Lambda
+    delta_d = Delta / Lambda
     h = get_water_depth_from_length(Lambda)
-    gamma_d_max = get_gamma_d_max(h,D50)    
-    
-    slope = get_slope_at_max_steepness(h, D50, rho_particule)
-    
-    print('gamma_d: {0}   gamma_d_max: {1}'.format(gamma_d,gamma_d_max))
-    
-    print('Slope at max steepness: {0}'.format(slope))
-    
-    
-    
-    if gamma_d < gamma_d_max:   
-                
-        _tol = 1.e-8
-        
-        slope1 = slope * 0.9
-        slope0 = slope * 2.05
-        
-        k = 0
-        while k <= _maxiter and abs( (slope1 - slope0) ) >= _tol:
-            
-            print(slope1,slope0) 
-            h0 = get_water_depth_from_length(Lambda)
-            h1 = get_water_depth_from_length(Lambda)
-    
-            fx0 = get_steepness(h0, slope0, D50, rho_particule) - gamma_d
-            fx1 = get_steepness(h1, slope1, D50, rho_particule) - gamma_d
-
-    
-            slope = slope0 - fx0 * ( slope0 - slope1 ) / ( fx0 - fx1 )
-            
-            slope1 = slope0
-            slope0 = slope
-    
-            k = k + 1
-    
-        if k > _maxiter:
-            print('Error: exceeded {0} iterations'.format(k))
-    else:
-        print('The steepness is greater than then maximum dune steepness')
-        
-    h = get_water_depth_from_length(Lambda)
-    return slope,h
-
-
-def get_slope_at_max_steepness(h, D50, rho_particule=_rho_particle):  
-    Ycr = sed_trans.get_Ycr(D50,rho_particule)
-    gamma_s = sed_trans.get_gamma_s(rho_particule)
-    u_cr_sqr =  Ycr*gamma_s*D50/_rho_water 
-    
-    T = 4.81247       
-    ustar_max_gamma_sqr =  T * u_cr_sqr + u_cr_sqr 
-    slope_max_gamma = ustar_max_gamma_sqr / (_g*h)
-    
-    return slope_max_gamma
-
-
-def get_gamma_d_max(h,D50):
-    
+    cf = dunelib.get_cf(h, D50)
+    c =  dunelib.get_total_chezy(h,D50, Lambda, Delta)
+    uprime_star_cr = get_uprime_star_cr(D50, rho_particule, cf)
     Z = h / D50
-    # The maximum steepness occurs at this value of T
-    # Performed in Wolfram Alpha
-    # d/dx((1-exp(-0.5 x)) (25-x)) = e^(-0.5 x) (13.5-0.5 x)-1    
-    T = 4.81247
-    gamma_d = 0.015 * (1./Z)**0.5 
-    gamma_d *= (1. - math.exp(-0.5 * T)) * (25. - T)
-    
-    return gamma_d
-    
+
+    delta_d_max = get_delta_d_max(h, D50)
+
+    print('The flow depth: {0} m and Z: {1}'.format(h, Z))
+    print('The cf = {0} and c {1} '.format(cf,c))
+    print('The maximum dune steepness: {0} and the observed steepness: {1}'.format(delta_d_max, delta_d))
+
+    if delta_d < delta_d_max:
+        # Solve for T
+        Tlow, Thigh = solve_for_T(delta_d, Z)
+
+        # Solve for ubars
+        ubar_low = get_uprime_star(Tlow, uprime_star_cr) * cf
+        S_low = ((ubar_low/c)**2)/(_g*h)
+        ubar_high = get_uprime_star(Thigh, uprime_star_cr) * cf
+        S_high = ((ubar_high / c) ** 2) / (_g * h)
+
+
+    else:
+        print('The steepness of the dune is greater than the maximum steepness')
+        print('Calculating the flow velocity and slope using the value derived from Tmax')
+        ubar_low = get_uprime_star(_T_max, uprime_star_cr) * cf
+        S_low = ((ubar_low / c) ** 2) / (_g * h)
+
+    return h, ubar_low, S_low, ubar_high, S_high
+
+def solve_for_T(delta_d_target, Z):
+
+    func = lambda T: delta_d_target - (0.015 * (1./Z)**0.3)*(1. - math.exp(-0.5 * T)) * (25. - T)
+
+    T_initial_guess_low = 0.5
+    T_initial_guess_high = 11.0
+    T_low = fsolve(func, T_initial_guess_low)
+    T_high = fsolve(func, T_initial_guess_high)
+
+    return T_low, T_high
+
+
+def get_uprime_star(T, uprime_star_cr):
+    return math.sqrt(T*(uprime_star_cr**2.) + (uprime_star_cr**2.))
+
+
+def get_uprime_star_cr(D50,rho_particule, cf):
+    gamma_s = sed_trans.get_gamma_s(rho_particule)
+    u_star_cr = sed_trans.get_Ycr(D50, rho_particule) * gamma_s * D50
+
+    return  u_star_cr/cf
 
 def get_water_depth_from_length(Lambda):
     return Lambda / 7.3
 
-def get_steepness(h, slope, D50, rho_particule):
-    
-    T = get_T(h, slope, D50, rho_particule)
-    Z = h / D50
-    
-    gamma_d = 0.015 * (1./Z)**0.5 
-    gamma_d *= (1. - math.exp(-0.5 * T)) * (25. - T)
-    
-    return gamma_d
 
-def get_T(h, slope, D50, rho_particule=_rho_particle):
-    u_star = math.sqrt(_g*slope*h)
-    gamma_s= get_gamma_s(rho_particule)
-    u_star_cr = sed_trans.get_Ycr(D50,rho_particule) * gamma_s * D50
-    
-    T = ( (u_star**2) - (u_star_cr**2) )/(u_star_cr**2)
-    
-    return T
+
+def get_delta_d_max(h,D50):
+
+    Z = h / D50
+    # The maximum steepness occurs at this value of T
+    # Performed in Wolfram Alpha
+    # d/dx((1-exp(-0.5 x)) (25-x)) = e^(-0.5 x) (13.5-0.5 x)-1
+
+    return get_delta_d(_T_max, Z)
+
+
+def get_delta_d(T, Z):
+
+    delta_d = (0.015 * (1./Z)**0.3)*(1. - math.exp(-0.5 * T)) * (25. - T)
+
+    return delta_d
+
+
 
 
 if __name__ == "__main__":
